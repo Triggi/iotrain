@@ -119,8 +119,6 @@ void netRequest(int connectionId, Stream* stream) {
       stream->find("\r\n\r\n");
 
       String pathString = path;
-      char* webpage1 = "<h1>Hello</h1><h2>World!</h2><button>LED1</button>";
-      char* webpage2 = "<button>LED2</button>";
       int lastAssignIdx = pathString.lastIndexOf('=');
       String valueStr = pathString.substring(lastAssignIdx + 1);
       double value = valueStr.toFloat();
@@ -132,9 +130,11 @@ void netRequest(int connectionId, Stream* stream) {
       status += ", \"currentLight\": ";
       status += lightCurrent;
       status += "}";
-      String headers = "Content-Type: application/json\r\n";
-      
-      if (pathString.startsWith("/speed")) {
+      String headers = "Content-Type: application/json\r\nAccess-Control-Allow-Origin: http://trainapp.mythingy.net\r\n";
+      if (pathString.length() == 1 && pathString.equals("/")) {
+          return sendHttpResponse(connectionId, 301, "MOVED",  "Location: http://trainapp.mythingy.net/\r\n", "");        
+      }
+      else if (pathString.startsWith("/speed")) {
         if (lastAssignIdx == -1) {
           Serial.println("missing value");
           return sendHttpResponse(connectionId, 400, "Need value");
@@ -190,6 +190,15 @@ void loop()
     }
     analogWrite(HEADLIGHT, lightCurrent);
   }
+  // Empty buffer
+  while (esp8266.available())
+  {
+    // The esp has data so display its output to the serial window
+    char c = esp8266.read(); // read the next character.
+    if (DEBUG) {
+      Serial.write(c);
+    }
+  }  
 }
 
 const char* sendDataTerm = "SEND OK\r\n";
@@ -246,3 +255,4 @@ String sendCommand(String command, const int timeout)
   }
   Serial.write("timeout in sendCommand!\r\n");
 }
+
