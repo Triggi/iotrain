@@ -190,15 +190,6 @@ void loop()
     }
     analogWrite(HEADLIGHT, lightCurrent);
   }
-  // Empty buffer
-  while (esp8266.available())
-  {
-    // The esp has data so display its output to the serial window
-    char c = esp8266.read(); // read the next character.
-    if (DEBUG) {
-      Serial.write(c);
-    }
-  }  
 }
 
 const char* sendDataTerm = "SEND OK\r\n";
