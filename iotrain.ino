@@ -49,19 +49,22 @@ void setup()
 
 void cipSend(int connectionId, String data) {
   int length = data.length();
-  char bytes[length];
-  data.getBytes(bytes, length);
+  char bytes[length + 1];
+  data.toCharArray(bytes, length + 1);
   cipSend(connectionId, bytes, length);
 }
 
+const int maxSend = 32;
+
 void cipSend(int connectionId, char* data, int length) {
+  Serial.print("cipSend nonString \r\n");
   int remaining = length;
   int sent = 0;
-  while (remaining > 64) {
+  while (remaining > maxSend) {
     Serial.println("loop");
-    cipSend(connectionId, data + sent, 64);
-    remaining -= 64;
-    sent += 64;
+    cipSend(connectionId, data + sent, maxSend);
+    remaining -= maxSend;
+    sent += maxSend;
   }
   String command = "AT+CIPSEND=";
   command += connectionId;
@@ -69,7 +72,7 @@ void cipSend(int connectionId, char* data, int length) {
   command += remaining;
   command += "\r\n";
 
-  sendCommand(command, 1000);
+  sendCommand(command, 3000);
   sendData(data + sent, remaining);
 }
 
@@ -82,6 +85,8 @@ void cipClose(int connectionId) {
 }
 
 void sendHttpResponse(int connectionId, int responseCode, String responseMsg, String headers, char* data, long dataLength) {
+  cipClose(connectionId);
+  return;
   String head = "HTTP/1.0 ";
   head += responseCode;
   head += " ";
@@ -249,4 +254,12 @@ String sendCommand(String command, const int timeout)
   }
   Serial.write("timeout in sendCommand!\r\n");
 }
+
+String sendCommand_nw(String command, const int timeout)
+{
+  String response = "";
+
+  esp8266.print(command); // send the read character to the esp8266
+}
+
 
