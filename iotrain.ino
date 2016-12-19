@@ -55,14 +55,22 @@ void cipSend(int connectionId, String data) {
 }
 
 void cipSend(int connectionId, char* data, int length) {
+  int remaining = length;
+  int sent = 0;
+  while (remaining > 64) {
+    Serial.println("loop");
+    cipSend(connectionId, data + sent, 64);
+    remaining -= 64;
+    sent += 64;
+  }
   String command = "AT+CIPSEND=";
   command += connectionId;
   command += ",";
-  command += length;
+  command += remaining;
   command += "\r\n";
 
   sendCommand(command, 1000);
-  sendData(data, length);
+  sendData(data + sent, remaining);
 }
 
 void cipClose(int connectionId) {
