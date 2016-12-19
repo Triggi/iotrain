@@ -5,8 +5,10 @@
 #define MOTOR_H 6
 #define HEADLIGHT 9
 
-#define AP_NAME "<your-wifi-ssid>"
-#define AP_PWD "<your-wifi-password>"
+#define AP_NAME "dreusnet"
+#define AP_PWD "#@bith@#"
+
+String indexPage = "";//<html><head> <meta charset='utf-8'> <meta name='viewport' content='width=device-width, minimum-scale=1, initial-scale=1, user-scalable=yes'> <title>IoTrain</title> <link rel='icon' href='/images/favicon.ico'> <link rel='import' href='http://trainparts.mythingy.net/src/train-app.html'> <style>body {margin: 0;font-family: 'Roboto', 'Noto', sans-serif;line-height: 1.5;min-height: 100vh;background-color: #eeeeee;} </style></head><body> <my-app></my-app></body></html>";
 
 SoftwareSerial esp8266(3, 2);
 
@@ -20,7 +22,7 @@ void setupWifi() {
   Serial.write("beginning setup\r\n");
   sendCommand("AT+RST\r\n", 2000); // reset module
   sendCommand("AT+CWMODE=1\r\n", 1000); // configure as access point
-  sendCommand("AT+CWJAP=\"" AP_NAME "\",\"" AP_PWD "\"\r\n", 4000); // configure as access point
+  sendCommandEx("AT+CWJAP=\"" AP_NAME "\",\"" AP_PWD "\"\r\n", 4000, "\r\nOK\r\n"); // configure as access point
   sendCommand("AT+CIFSR\r\n", 1000); // get ip address
   sendCommand("AT+CIPMUX=1\r\n", 1000); // configure for multiple connections
   sendCommand("AT+CIPSERVER=1,80\r\n", 1000); // turn on server on port 80
@@ -55,14 +57,22 @@ void cipSend(int connectionId, String data) {
 }
 
 void cipSend(int connectionId, char* data, int length) {
+  int remaining = length;
+  int sent = 0;
+  while (remaining > 64) {
+    Serial.println("loop");
+    cipSend(connectionId, data + sent, 64);
+    remaining -= 64;
+    sent += 64;
+  }
   String command = "AT+CIPSEND=";
   command += connectionId;
   command += ",";
-  command += length;
+  command += remaining;
   command += "\r\n";
 
   sendCommand(command, 1000);
-  sendData(data, length);
+  sendData(data + sent, remaining);
 }
 
 void cipClose(int connectionId) {
@@ -102,55 +112,72 @@ void sendHttpResponse(int connectionId, int responseCode, String responseMsg) {
   sendHttpResponse(connectionId, responseCode, responseMsg, "", NULL, 0);
 }
 
+double getValue(String pathString) {
+    int lastAssignIdx = pathString.lastIndexOf('=');
+    if (lastAssignIdx == -1) {
+      return -1;
+    }
+    String valueStr = pathString.substring(lastAssignIdx + 1);
+    return valueStr.toFloat();  
+}
+
+double speedFactor = 2.55;
+double lightFactor = 2.0;
 
 void netRequest(int connectionId, Stream* stream) {
-      char method[10];
-      int count = stream->readBytesUntil(' ', method, sizeof(method) - 1);
-      method[count] = 0;
-      Serial.println("method: ");
-      Serial.println(method);
+  char method[10];
+  int count = stream->readBytesUntil(' ', method, sizeof(method) - 1);
+  method[count] = 0;
+  Serial.println("method: ");
+  Serial.println(method);
 
-      char path[100];
-      count = stream->readBytesUntil(' ', path, sizeof(path) - 1);
-      path[count] = 0;
-      Serial.println("path: ");
-      Serial.println(path);
-      //Skipp till end of headers
-      stream->find("\r\n\r\n");
+  char path[100];
+  count = stream->readBytesUntil(' ', path, sizeof(path) - 1);
+  path[count] = 0;
+  Serial.println("path: ");
+  Serial.println(path);
+  //Skipp till end of headers
+  stream->find("\r\n\r\n");
 
-      String pathString = path;
-      int lastAssignIdx = pathString.lastIndexOf('=');
-      String valueStr = pathString.substring(lastAssignIdx + 1);
-      double value = valueStr.toFloat();
-      if (value > 100) value = 100;
-      Serial.print("Set to value: ");
-      Serial.println(value);
-      String status = "{\"currentSpeed\": ";
-      status += current;
-      status += ", \"currentLight\": ";
-      status += lightCurrent;
-      status += "}";
-      String headers = "Content-Type: application/json\r\nAccess-Control-Allow-Origin: http://trainapp.mythingy.net\r\n";
-      if (pathString.length() == 1 && pathString.equals("/")) {
-          return sendHttpResponse(connectionId, 301, "MOVED",  "Location: http://trainapp.mythingy.net/\r\n", "");        
-      }
-      else if (pathString.startsWith("/speed")) {
-        if (lastAssignIdx == -1) {
-          Serial.println("missing value");
-          return sendHttpResponse(connectionId, 400, "Need value");
-        }
-        sendHttpResponse(connectionId, 200, "OK", headers, status);
-        target = (int)(value * 2.55);
-      } else if (pathString.startsWith("/light")) {
-        if (lastAssignIdx == -1) {
-          Serial.println("missing value");
-          return sendHttpResponse(connectionId, 400, "Need value");
-        }
-        sendHttpResponse(connectionId, 200, "OK", headers, status);
-        lightTarget = (int)(value * 1.50);
-      } else {
-        sendHttpResponse(connectionId, 404, "unknown");
-      }
+  int sendStatus = 0;
+
+  String pathString = path;
+  if (pathString.startsWith("/app")) {
+      return sendHttpResponse(connectionId, 301, "MOVED",  "Location: http://trainapp.mythingy.net/\r\n", "");        
+  }
+  else if (pathString.startsWith("/speed")) {
+    double value = getValue(pathString);
+    if (value < 0) {
+      return sendHttpResponse(connectionId, 400, "Need value");
+    }
+    if (value > 100) value = 100;
+    sendStatus = 1;
+    target = (int)(value * speedFactor);
+  } else if (pathString.startsWith("/light")) {
+    double value = getValue(pathString);
+    if (value < 0) {
+      return sendHttpResponse(connectionId, 400, "Need value");
+    }
+    if (value > 100) value = 100;
+    sendStatus = 1;
+    lightTarget = (int)(value * lightFactor);
+  } else {
+    sendHttpResponse(connectionId, 404, "unknown");
+  }
+  if (sendStatus) {
+    String status = "";
+//    status += "{\"currentSpeed\": ";
+//    status += ((double)current) / speedFactor;
+//    status += ", \"currentLight\": ";
+//    status += ((double)lightCurrent) / lightFactor;
+//    status += ", \"targetSpeed\": ";
+//    status += ((double)target) / speedFactor;
+//    status += ", \"targetLight\": ";
+//    status += ((double)lightTarget) / lightFactor;
+//    status += "}";
+    String headers = "";//Content-Type: application/json\r\nAccess-Control-Allow-Origin: http://trainapp.mythingy.net\r\n";        
+    sendHttpResponse(connectionId, 200, "OK", headers, status);
+  }
 }
 
 void loop()
@@ -163,11 +190,7 @@ void loop()
     {
       int count;
       int connectionId = esp8266.parseInt();
-      Serial.println("connectionId: ");
-      Serial.println(connectionId);
       int byteCnt = esp8266.parseInt();
-      Serial.println("byteCnt: ");
-      Serial.println(byteCnt);
       esp8266.find(":");
       netRequest(connectionId, &esp8266);
     }
@@ -190,22 +213,13 @@ void loop()
     }
     analogWrite(HEADLIGHT, lightCurrent);
   }
-  // Empty buffer
-  while (esp8266.available())
-  {
-    // The esp has data so display its output to the serial window
-    char c = esp8266.read(); // read the next character.
-    if (DEBUG) {
-      Serial.write(c);
-    }
-  }  
 }
 
 const char* sendDataTerm = "SEND OK\r\n";
 
-void sendData(char* data, int length) {
+void sendData_old(char* data, int length) {
   esp8266.write(data, length);
-  const int timeout = length * 10;
+  const int timeout = 50000;
   String response = "";
   long int time = millis();
   while ( (time + timeout) > millis())
@@ -228,8 +242,49 @@ void sendData(char* data, int length) {
   Serial.write("timeout in sendData!\r\n");
 }
 
-String sendCommand(String command, const int timeout)
+void sendData(char* data, int length) {
+  esp8266.write(data, length);
+  String response = "";
+  while (true) if (esp8266.available())
+  {
+    // The esp has data so display its output to the serial window
+    char c = esp8266.read(); // read the next character.
+    response += c;
+    if (DEBUG) {
+      Serial.write(c);
+    }
+    if (response.length() > strlen(sendDataTerm) && response.endsWith(sendDataTerm)) {
+      Serial.write("Data done\r\n");
+      return;
+    }
+  }
+}
+
+void slurpRemain() {
+  Serial.println("slurpRemain");
+  long int time = millis();
+
+  while ( (time + 5000) > millis())
+  {
+    while (esp8266.available())
+    {
+      // The esp has data so display its output to the serial window
+      char c = esp8266.read(); // read the next character.
+      time = millis();
+      if (DEBUG) {
+        Serial.print(c);
+      }
+    }
+  }
+  Serial.println("/slurpRemain");
+}
+String sendCommandEx(String command, const int timeout, String terminator)
 {
+  Serial.print("sendCommand_term ");
+  Serial.print(command);
+  Serial.print(" ");
+  Serial.print(terminator);
+  Serial.print("\r\n");
   String response = "";
 
   esp8266.print(command); // send the read character to the esp8266
@@ -240,15 +295,18 @@ String sendCommand(String command, const int timeout)
   {
     while (esp8266.available())
     {
+      Serial.print("byte ");
 
       // The esp has data so display its output to the serial window
       char c = esp8266.read(); // read the next character.
       response += c;
       time = millis();
       if (DEBUG) {
-        Serial.write(c);
+        Serial.println(c);
       }
-      if (response.length() > 4 && response.endsWith("\r\nOK\r\n")) {
+      if (response.endsWith(terminator)) {
+        Serial.println("done");
+        slurpRemain();
         return response;
       }
     }
@@ -256,3 +314,30 @@ String sendCommand(String command, const int timeout)
   Serial.write("timeout in sendCommand!\r\n");
 }
 
+String sendCommand(String command, const int timeout)
+{
+  Serial.print("sendCommand_noterm ");
+  sendCommandEx(command, timeout, "\r\nOK\r\n");
+}
+
+String sendCommand_nt(String command, const int timeout)
+{
+  String response = "";
+
+  esp8266.print(command); // send the read character to the esp8266
+
+
+  while (true) if (esp8266.available())
+  {
+    // The esp has data so display its output to the serial window
+    char c = esp8266.read(); // read the next character.
+    response += c;
+    if (DEBUG) {
+      Serial.write(c);
+    }
+    if (response.length() > 4 && response.endsWith("\r\nOK\r\n")) {
+      return response;
+    }
+  }
+  Serial.println("uhm?");
+}
