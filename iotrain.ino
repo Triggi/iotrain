@@ -170,11 +170,7 @@ void loop()
     {
       int count;
       int connectionId = esp8266.parseInt();
-      Serial.println("connectionId: ");
-      Serial.println(connectionId);
       int byteCnt = esp8266.parseInt();
-      Serial.println("byteCnt: ");
-      Serial.println(byteCnt);
       esp8266.find(":");
       netRequest(connectionId, &esp8266);
     }
