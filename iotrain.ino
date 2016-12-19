@@ -139,10 +139,9 @@ void netRequest(int connectionId, Stream* stream) {
       status += lightCurrent;
       status += "}";
       String headers = "Content-Type: application/json\r\nAccess-Control-Allow-Origin: http://trainapp.mythingy.net\r\n";
-      if (pathString.length() == 1 && pathString.equals("/")) {
+      if (pathString.startsWith("/app")) {
           return sendHttpResponse(connectionId, 301, "MOVED",  "Location: http://trainapp.mythingy.net/\r\n", "");        
-      }
-      else if (pathString.startsWith("/speed")) {
+      } else if (pathString.startsWith("/speed")) {
         if (lastAssignIdx == -1) {
           Serial.println("missing value");
           return sendHttpResponse(connectionId, 400, "Need value");
