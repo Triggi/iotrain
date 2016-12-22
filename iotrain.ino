@@ -1,6 +1,6 @@
 #include <SoftwareSerial.h>
 
-#define DEBUG true
+#define DEBUG false
 #define MOTOR_L 5
 #define MOTOR_H 6
 #define HEADLIGHT 9
@@ -16,15 +16,19 @@ int current = 0;
 int lightTarget = 0;
 int lightCurrent = 0;
 
+const char* OkRsp = "\r\nOK\r\n";
+String command;
+
 void setupWifi() {
-  Serial.write("beginning setup\r\n");
-  sendCommand("AT+RST\r\n", 2000); // reset module
-  sendCommand("AT+CWMODE=1\r\n", 1000); // configure as access point
-  sendCommand("AT+CWJAP=\"" AP_NAME "\",\"" AP_PWD "\"\r\n", 4000); // configure as access point
-  sendCommand("AT+CIFSR\r\n", 1000); // get ip address
-  sendCommand("AT+CIPMUX=1\r\n", 1000); // configure for multiple connections
-  sendCommand("AT+CIPSERVER=1,80\r\n", 1000); // turn on server on port 80
-  Serial.write("done setup\r\n");
+  traceln("beginning setup");
+  //  sendCommand("AT+RST\r\n", 2000); // Do not use - inpredictable output, will connect to WiFi if it was set-up before
+  //  sendCommand("AT+ATE0\r\n", 2000);
+  sendCommand("AT+CWMODE=1\r\n", 1000, OkRsp); // configure as client
+  sendCommand("AT+CWJAP=\"" AP_NAME "\",\"" AP_PWD "\"\r\n", 4000, OkRsp); // configure as access point
+  sendCommand("AT+CIFSR\r\n", 1000, OkRsp); // get ip address
+  sendCommand("AT+CIPMUX=1\r\n", 1000, OkRsp); // configure for multiple connections
+  sendCommand("AT+CIPSERVER=1,80\r\n", 1000, OkRsp); // turn on server on port 80
+  traceln("done setup");
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
@@ -45,124 +49,92 @@ void setup()
   esp8266.begin(9600); // your esp's baud rate might be different
   setupWifi();
   setupMotor();
+  command.reserve(20);
 }
 
-void cipSend(int connectionId, String data) {
-  int length = data.length();
-  char bytes[length + 1];
-  data.toCharArray(bytes, length + 1);
-  cipSend(connectionId, bytes, length);
-}
+const char headTemplate[] = "HTTP/1.1 xxx\r\n";
+void sendHttpResponse(int connectionId, const char* responseCode, const char* responseMsg, const char* headers, const char* data, long dataLength) {
+  char head[strlen(headTemplate) + strlen(headers) + strlen("\r\n")];
+  char* wrPtr = head;
+  wrPtr = addToBuff(wrPtr, "HTTP/1.1 ");
+  wrPtr = addToBuff(wrPtr, responseCode);
+  wrPtr = addToBuff(wrPtr, "\r\n");
+  wrPtr = addToBuff(wrPtr, headers);
+  wrPtr = addToBuff(wrPtr, "\r\n");
 
-const int maxSend = 32;
-
-void cipSend(int connectionId, char* data, int length) {
-  Serial.print("cipSend nonString \r\n");
-  int remaining = length;
-  int sent = 0;
-  while (remaining > maxSend) {
-    Serial.println("loop");
-    cipSend(connectionId, data + sent, maxSend);
-    remaining -= maxSend;
-    sent += maxSend;
-  }
-  String command = "AT+CIPSEND=";
-  command += connectionId;
-  command += ",";
-  command += remaining;
-  command += "\r\n";
-
-  sendCommand(command, 3000);
-  sendData(data + sent, remaining);
-}
-
-void cipClose(int connectionId) {
-  String closeCommand = "AT+CIPCLOSE=";
-  closeCommand += connectionId; // append connection id
-  closeCommand += "\r\n";
-
-  sendCommand(closeCommand, 3000);
-}
-
-void sendHttpResponse(int connectionId, int responseCode, String responseMsg, String headers, char* data, long dataLength) {
-  cipClose(connectionId);
-  return;
-  String head = "HTTP/1.0 ";
-  head += responseCode;
-  head += " ";
-  head += responseMsg;
-  head += "\r\n";
-  if (headers) {
-    head += headers;
-  }
-  head += "\r\n";
-  cipSend(connectionId, head);
+  cipSend(connectionId, head, strlen(head));
   if (data && dataLength > 0) {
     cipSend(connectionId, data, dataLength);
   }
   cipClose(connectionId);
 }
 
-void sendHttpResponse(int connectionId, int responseCode, String responseMsg, String headers, String data) {
+void sendHttpResponse(int connectionId, const char* responseCode, const char* responseMsg, const char* headers, String data) {
   int dataLength = data.length();
   char dataBytes[dataLength + 1];
   data.toCharArray(dataBytes, dataLength + 1);
-  
+
   sendHttpResponse(connectionId, responseCode, responseMsg, headers, dataBytes, dataLength);
 }
 
-void sendHttpResponse(int connectionId, int responseCode, String responseMsg) {
+void sendHttpResponse(int connectionId, const char* responseCode, const char* responseMsg) {
   sendHttpResponse(connectionId, responseCode, responseMsg, "", NULL, 0);
 }
 
+const char defaultHeaders[] = "Content-Type: application/json\r\nAccess-Control-Allow-Origin: http://trainapp.mythingy.net\r\n";
+const char appRedirHeader[] = "Location: http://trainapp.mythingy.net/\r\n";
+//const char statusResponseTemplate[] PROGMEM = "{\"currentSpeed\": xxx, ", \"currentLight\": xxx }";
 
-void netRequest(int connectionId, Stream* stream) {
-      char method[10];
-      int count = stream->readBytesUntil(' ', method, sizeof(method) - 1);
-      method[count] = 0;
-      Serial.println("method: ");
-      Serial.println(method);
+void handleHttpRequest(int connectionId, const char* path, Stream* stream) {
+  if (startsWith(path, "/app")) {
+    return sendHttpResponse(connectionId, "301", "MOVED",  appRedirHeader, "");
+  } else {
+    String status = "{\"currentSpeed\": ";
+    status += (int) (0.5 + ((float)current) / 2.55);
+    status += ", \"currentLight\": ";
+    status += (int) (0.5 + ((float) lightCurrent) / 2.55);
+    status += "}";
+  
+    float value = lastValueFromPath(path);
+    if (value > 100) value = 100;
 
-      char path[100];
-      count = stream->readBytesUntil(' ', path, sizeof(path) - 1);
-      path[count] = 0;
-      Serial.println("path: ");
-      Serial.println(path);
-      //Skipp till end of headers
-      stream->find("\r\n\r\n");
+    traceKeyVal("Set to value: ", value);
+    trace("Set to value: ");
 
-      String pathString = path;
-      int lastAssignIdx = pathString.lastIndexOf('=');
-      String valueStr = pathString.substring(lastAssignIdx + 1);
-      double value = valueStr.toFloat();
-      if (value > 100) value = 100;
-      Serial.print("Set to value: ");
-      Serial.println(value);
-      String status = "{\"currentSpeed\": ";
-      status += current;
-      status += ", \"currentLight\": ";
-      status += lightCurrent;
-      status += "}";
-      String headers = "Content-Type: application/json\r\nAccess-Control-Allow-Origin: http://trainapp.mythingy.net\r\n";
-      if (pathString.startsWith("/app")) {
-          return sendHttpResponse(connectionId, 301, "MOVED",  "Location: http://trainapp.mythingy.net/\r\n", "");        
-      } else if (pathString.startsWith("/speed")) {
-        if (lastAssignIdx == -1) {
-          Serial.println("missing value");
-          return sendHttpResponse(connectionId, 400, "Need value");
-        }
-        sendHttpResponse(connectionId, 200, "OK", headers, status);
-        target = (int)(value * 2.55);
-      } else if (pathString.startsWith("/light")) {
-        if (lastAssignIdx == -1) {
-          Serial.println("missing value");
-          return sendHttpResponse(connectionId, 400, "Need value");
-        }
-        sendHttpResponse(connectionId, 200, "OK", headers, status);
-        lightTarget = (int)(value * 1.50);
-      } else {
-        sendHttpResponse(connectionId, 404, "unknown");
+    if (startsWith(path, "/speed")) {
+      if (value < 0) {
+        traceln("missing value");
+        return sendHttpResponse(connectionId, "400", "Need value");
       }
+      sendHttpResponse(connectionId, "200", "OK", defaultHeaders, status);
+      target = (int)(value * 2.55);
+    } else if (startsWith(path, "/light")) {
+      if (value < 0) {
+        traceln("missing value");
+        return sendHttpResponse(connectionId, "400", "Need value");
+      }
+      sendHttpResponse(connectionId, "200", "OK", defaultHeaders, status);
+      lightTarget = (int)(value * 2.55);
+    } else {
+      sendHttpResponse(connectionId, "404", "unknown");
+    }
+  }
+}
+
+void handleNetRequest(int connectionId, Stream* stream) {
+  char method[10];
+  int count = stream->readBytesUntil(' ', method, sizeof(method) - 1);
+  method[count] = 0;
+  traceKeyVal("method: ", method);
+
+  char path[20];
+  count = stream->readBytesUntil(' ', path, sizeof(path) - 1);
+  path[count] = 0;
+  traceKeyVal("path: ", path);
+
+  stream->find("\r\n\r\n");
+
+  handleHttpRequest(connectionId, path, stream);
 }
 
 void loop()
@@ -177,7 +149,7 @@ void loop()
       int connectionId = esp8266.parseInt();
       int byteCnt = esp8266.parseInt();
       esp8266.find(":");
-      netRequest(connectionId, &esp8266);
+      handleNetRequest(connectionId, &esp8266);
     }
   }
 
@@ -200,13 +172,72 @@ void loop()
   }
 }
 
-const char* sendDataTerm = "SEND OK\r\n";
+/**
+   CIP commands
+*/
+const int maxSend = 64;
+void cipSend(int connectionId, char* data, int length) {
+  int remaining = length;
+  int sent = 0;
+  command = "AT+CIPSEND=";
+  command += connectionId;
+  command += ",64\r\n";
+
+  while (remaining > maxSend) {
+    sendCommand(command, 1000, "> ");
+    sendData(data + sent, maxSend);
+
+    remaining -= maxSend;
+    sent += maxSend;
+  }
+  if (remaining > 0) {
+    command = "AT+CIPSEND=";
+    command += connectionId;
+    command += ",";
+    command += remaining;
+    command += "\r\n";
+
+    sendCommand(command, 1000, "> ");
+    sendData(data + sent, remaining);
+  }
+}
+
+void cipClose(int connectionId) {
+  String closeCommand = "AT+CIPCLOSE=";
+  closeCommand += connectionId; // append connection id
+  closeCommand += "\r\n";
+
+  sendCommand(closeCommand, 1000, OkRsp);
+}
+
 
 void sendData(char* data, int length) {
   esp8266.write(data, length);
-  const int timeout = length * 10;
+  if (awaitResponse(4000, "SEND OK\r\n")) {
+    traceln("data done");
+  } else {
+    traceln("data timeout");
+  }
+}
+
+void sendCommand(String command, const int timeout, const char* term)
+{
+  esp8266.print(command); // send the read character to the esp8266
+
+  if (awaitResponse(timeout, term)) {
+    traceln("command done");
+  } else {
+    traceln("command timeout");
+  }
+}
+
+/**
+   Wait until either a terminator string is seen or longer than <timout> has passed after receiving the last byte.
+*/
+bool awaitResponse(const int timeout, const char* term) {
   String response = "";
   long int time = millis();
+
   while ( (time + timeout) > millis())
   {
     while (esp8266.available())
@@ -218,48 +249,58 @@ void sendData(char* data, int length) {
       if (DEBUG) {
         Serial.write(c);
       }
-      if (response.length() > strlen(sendDataTerm) && response.endsWith(sendDataTerm)) {
-        Serial.write("Data done\r\n");
-        return;
+      if (response.endsWith(term)) {
+        return true;
       }
     }
   }
-  Serial.write("timeout in sendData!\r\n");
+  return false;
 }
 
-String sendCommand(String command, const int timeout)
-{
-  String response = "";
+/**
+   Utility functions
+*/
+bool startsWith(const char* buf, const char* with) {
+  return strncmp(buf, with, strlen(with)) == 0;
+}
 
-  esp8266.print(command); // send the read character to the esp8266
-
-  long int time = millis();
-
-  while ( (time + timeout) > millis())
-  {
-    while (esp8266.available())
-    {
-
-      // The esp has data so display its output to the serial window
-      char c = esp8266.read(); // read the next character.
-      response += c;
-      time = millis();
-      if (DEBUG) {
-        Serial.write(c);
-      }
-      if (response.length() > 4 && response.endsWith("\r\nOK\r\n")) {
-        return response;
-      }
-    }
+int lastValueFromPath(const char* pathStr) {
+  const char* eq = strrchr(pathStr, '=');
+  if (!eq) {
+    return -1;
   }
-  Serial.write("timeout in sendCommand!\r\n");
+  return atoi(eq + 1);
 }
 
-String sendCommand_nw(String command, const int timeout)
-{
-  String response = "";
-
-  esp8266.print(command); // send the read character to the esp8266
+char* addToBuff(const char* buff, const char* add) {
+  int len = strlen(add);
+  strcpy(buff, add);
+  return buff + len;
 }
 
+void trace(const char* line) {
+  if (DEBUG) {
+    Serial.print(line);
+  }
+}
+
+void traceln(const char* line) {
+  if (DEBUG) {
+    Serial.println(line);
+  }
+}
+
+void traceKeyVal(const char* key, const char* value) {
+  if (DEBUG) {
+    Serial.print(key);
+    Serial.println(value);
+  }
+}
+
+void traceKeyVal(const char* key, int value) {
+  if (DEBUG) {
+    Serial.print(key);
+    Serial.println(value);
+  }
+}
 
