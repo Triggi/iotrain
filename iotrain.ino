@@ -1,6 +1,6 @@
 #include <SoftwareSerial.h>
 
-#define DEBUG false
+#define DEBUG true
 #define MOTOR_L 5
 #define MOTOR_H 6
 #define HEADLIGHT 9
@@ -19,26 +19,32 @@ int lightCurrent = 0;
 const char* OkRsp = "\r\nOK\r\n";
 String command;
 
+// Configure the WiFi module
 void setupWifi() {
   traceln("beginning setup");
   //  sendCommand("AT+RST\r\n", 2000); // Do not use - inpredictable output, will connect to WiFi if it was set-up before
-  //  sendCommand("AT+ATE0\r\n", 2000);
-  sendCommand("AT+CWMODE=1\r\n", 1000, OkRsp); // configure as client
-  sendCommand("AT+CWJAP=\"" AP_NAME "\",\"" AP_PWD "\"\r\n", 4000, OkRsp); // configure as access point
-  sendCommand("AT+CIFSR\r\n", 1000, OkRsp); // get ip address
-  sendCommand("AT+CIPMUX=1\r\n", 1000, OkRsp); // configure for multiple connections
-  sendCommand("AT+CIPSERVER=1,80\r\n", 1000, OkRsp); // turn on server on port 80
-  traceln("done setup");
+  // configure as client
+  sendCommand("AT+CWMODE=1\r\n", 1000, OkRsp); 
+  // Join the specified access point
+  sendCommand("AT+CWJAP=\"" AP_NAME "\",\"" AP_PWD "\"\r\n", 4000, OkRsp);
+  // get ip address
+  sendCommand("AT+CIFSR\r\n", 1000, OkRsp); 
+  // configure for multiple connections
+  sendCommand("AT+CIPMUX=1\r\n", 1000, OkRsp); 
+  // listen on port 80
+  sendCommand("AT+CIPSERVER=1,80\r\n", 1000, OkRsp); 
+  traceln("setup done");
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
+//Configure the motor + LED control pins
 void setupMotor() {
   pinMode(MOTOR_L, OUTPUT);
   pinMode(MOTOR_H, OUTPUT);
   pinMode(HEADLIGHT, OUTPUT);
-  digitalWrite(MOTOR_L, LOW);   // turn the LED on (HIGH is the voltage level)
-  analogWrite(MOTOR_H, 0);   // turn the LED on (HIGH is the voltage level)
-  analogWrite(HEADLIGHT, 10);   // turn the LED on (HIGH is the voltage level)
+  digitalWrite(MOTOR_L, LOW);
+  analogWrite(MOTOR_H, 0);
+  analogWrite(HEADLIGHT, 0);
 }
 
 void setup()
@@ -46,10 +52,48 @@ void setup()
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
   Serial.begin(115200);
-  esp8266.begin(9600); // your esp's baud rate might be different
+  esp8266.begin(9600);
   setupWifi();
   setupMotor();
   command.reserve(20);
+}
+
+void loop()
+{
+  //Do we have data from the WiFi module?
+  if (esp8266.available()) 
+  {
+    //Decode it. Data packets look like '+IPD,<conId>,<size>:<data>
+    if (esp8266.find("+IPD,"))
+    {
+      int count;
+      int connectionId = esp8266.parseInt();
+      int byteCnt = esp8266.parseInt();
+      // Skip till the end of the header
+      esp8266.find(":");
+      // The rest is the actual data from the client
+      handleNetRequest(connectionId, &esp8266);
+    }
+  }
+
+  //Adjust motor speed and headlight
+  long time = millis();
+  if (time - lastTime > 10) {
+    // Smooth out changes, 1 point per 10 ms
+    lastTime = time;
+    if (target > current) {
+      ++current;
+    } else if (target < current) {
+      --current;
+    }
+    analogWrite(MOTOR_H, current);
+    if (lightTarget > lightCurrent) {
+      ++lightCurrent;
+    } else if (lightTarget < lightCurrent) {
+      --lightCurrent;
+    }
+    analogWrite(HEADLIGHT, lightCurrent);
+  }
 }
 
 const char headTemplate[] = "HTTP/1.1 xxx\r\n";
@@ -83,7 +127,6 @@ void sendHttpResponse(int connectionId, const char* responseCode, const char* re
 
 const char defaultHeaders[] = "Content-Type: application/json\r\nAccess-Control-Allow-Origin: http://trainapp.mythingy.net\r\n";
 const char appRedirHeader[] = "Location: http://trainapp.mythingy.net/\r\n";
-//const char statusResponseTemplate[] PROGMEM = "{\"currentSpeed\": xxx, ", \"currentLight\": xxx }";
 
 void handleHttpRequest(int connectionId, const char* path, Stream* stream) {
   if (startsWith(path, "/app")) {
@@ -135,41 +178,6 @@ void handleNetRequest(int connectionId, Stream* stream) {
   stream->find("\r\n\r\n");
 
   handleHttpRequest(connectionId, path, stream);
-}
-
-void loop()
-{
-  //Incomming
-  if (esp8266.available()) // check if the esp is sending a message
-  {
-    //Data packets look like '+IPD,<conId>,<size>:<data>
-    if (esp8266.find("+IPD,"))
-    {
-      int count;
-      int connectionId = esp8266.parseInt();
-      int byteCnt = esp8266.parseInt();
-      esp8266.find(":");
-      handleNetRequest(connectionId, &esp8266);
-    }
-  }
-
-  //Adjust motor speed and headlight
-  long time = millis();
-  if (time - lastTime > 10) {
-    lastTime = time;
-    if (target > current) {
-      ++current;
-    } else if (target < current) {
-      --current;
-    }
-    analogWrite(MOTOR_H, current);
-    if (lightTarget > lightCurrent) {
-      ++lightCurrent;
-    } else if (lightTarget < lightCurrent) {
-      --lightCurrent;
-    }
-    analogWrite(HEADLIGHT, lightCurrent);
-  }
 }
 
 /**
